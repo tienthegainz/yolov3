@@ -15,10 +15,6 @@ try:  # Mixed precision training https://github.com/NVIDIA/apex
 except:
     mixed_precision = False  # not installed
 
-wdir = 'weights' + os.sep  # weights dir
-last = wdir + 'last.pt'
-best = wdir + 'best.pt'
-results_file = 'results.txt'
 
 # Hyperparameters (results68: 59.9 mAP@0.5 yolov3-spp-416) https://github.com/ultralytics/yolov3/issues/310
 
@@ -27,8 +23,8 @@ hyp = {'giou': 3.54,  # giou loss gain
        'cls_pw': 1.0,  # cls BCELoss positive_weight
        'obj': 64.3,  # obj loss gain (*=img_size/320 if img_size != 320)
        'obj_pw': 1.0,  # obj BCELoss positive_weight
-       'iou_t': 0.225,  # iou training threshold
-       'lr0': 0.00579,  # initial learning rate (SGD=5E-3, Adam=5E-4)
+       'iou_t': 0.194,  # iou training threshold
+       'lr0': 0.0001,  # initial learning rate (SGD=5E-3, Adam=5E-4)
        'lrf': -4.,  # final LambdaLR learning rate = lr0 * (10 ** lrf)
        'momentum': 0.937,  # SGD momentum
        'weight_decay': 0.000484,  # optimizer weight decay
@@ -50,6 +46,9 @@ if f:
 
 
 def train():
+    wdir = opt.save_path  # weights dir
+    results_file = 'results.txt'
+
     cfg = opt.cfg
     data = opt.data
     img_size, img_size_test = opt.img_size if len(
@@ -95,13 +94,17 @@ def train():
         # hyp['lr0'] *= 0.1  # reduce lr (i.e. SGD=5E-3, Adam=5E-4)
         optimizer = optim.Adam(pg0, lr=hyp['lr0'])
         # optimizer = AdaBound(pg0, lr=hyp['lr0'], final_lr=0.1)
+        # print('Adam_lr: {}'.format(hyp['lr0']))
     else:
         optimizer = optim.SGD(
             pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
+        print("SGD_lr: {}, momentum: {}, decay: {}".format(
+            hyp['lr0'], hyp['momentum'], hyp['weight_decay']))
     # add pg1 with weight_decay
     optimizer.add_param_group(
         {'params': pg1, 'weight_decay': hyp['weight_decay']})
     optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
+
     del pg0, pg1, pg2
 
     start_epoch = 0
@@ -125,6 +128,8 @@ def train():
         # load optimizer
         if chkpt['optimizer'] is not None:
             optimizer.load_state_dict(chkpt['optimizer'])
+            # for param_group in optimizer.param_groups:
+            #     param_group['lr'] = hyp['lr0']
             best_fitness = chkpt['best_fitness']
 
         # load results
@@ -139,11 +144,6 @@ def train():
         # possible weights are '*.weights', 'yolov3-tiny.conv.15',  'darknet53.conv.74' etc.
         load_darknet_weights(model, weights)
 
-    # Mixed precision training https://github.com/NVIDIA/apex
-    if mixed_precision:
-        model, optimizer = amp.initialize(
-            model, optimizer, opt_level='O1', verbosity=0)
-
     # Scheduler https://github.com/ultralytics/yolov3/issues/238
     # lf = lambda x: 1 - x / epochs  # linear ramp to zero
     # lf = lambda x: 10 ** (hyp['lrf'] * x / epochs)  # exp ramp
@@ -151,20 +151,15 @@ def train():
     # lf = lambda x: 0.5 * (1 + math.cos(x * math.pi / epochs))  # cosine https://arxiv.org/pdf/1812.01187.pdf
     # scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=range(59, 70, 1), gamma=0.8)  # gradual fall to 0.1*lr0
+
+    # Mixed precision training https://github.com/NVIDIA/apex
+    if mixed_precision:
+        model, optimizer = amp.initialize(
+            model, optimizer, opt_level='O1', verbosity=0)
+
     scheduler = lr_scheduler.MultiStepLR(
         optimizer, milestones=[round(epochs * x) for x in [0.8, 0.9]], gamma=0.1)
     scheduler.last_epoch = start_epoch
-
-    # # Plot lr schedule
-    # y = []
-    # for _ in range(epochs):
-    #     scheduler.step()
-    #     y.append(optimizer.param_groups[0]['lr'])
-    # plt.plot(y, '.-', label='LambdaLR')
-    # plt.xlabel('epoch')
-    # plt.ylabel('LR')
-    # plt.tight_layout()
-    # plt.savefig('LR.png', dpi=300)
 
     # Initialize distributed training
     if device.type != 'cpu' and torch.cuda.device_count() > 1:
@@ -228,7 +223,8 @@ def train():
     # epoch ------------------------------------------------------------------
     for epoch in range(start_epoch, epochs):
         model.train()
-
+        for param_group in optimizer.param_groups:
+            print('LR: ', param_group['lr'])
         # Prebias
         if prebias:
             if epoch < 3:  # prebias
@@ -386,15 +382,14 @@ def train():
                          'optimizer': None if final_epoch else optimizer.state_dict()}
 
             # Save last checkpoint
-            torch.save(chkpt, last)
+            # torch.save(chkpt, last)
 
             # Save best checkpoint
             if best_fitness == fi:
-                torch.save(chkpt, best)
-
-            # Save backup every 10 epochs (optional)
-            # if epoch > 0 and epoch % 10 == 0:
-            #     torch.save(chkpt, wdir + 'backup%g.pt' % epoch)
+                fname = os.path.join(
+                    wdir, 'epoch_{}_best.pt'.format(epoch))
+                torch.save(chkpt, fname)
+                print('Saved {}'.format(fname))
 
             # Delete checkpoint
             del chkpt
@@ -469,6 +464,8 @@ if __name__ == '__main__':
     parser.add_argument('--single-cls', action='store_true',
                         help='train as single-class dataset')
     parser.add_argument('--var', type=float, help='debug variable')
+    parser.add_argument('--save_path', type=str,
+                        help='weights save path')
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
     print(opt)
