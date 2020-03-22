@@ -48,6 +48,9 @@ if f:
 
 
 def train():
+    wdir = opt.save_path  # weights dir
+    results_file = 'results.txt'
+
     cfg = opt.cfg
     data = opt.data
     img_size, img_size_test = opt.img_size if len(
@@ -93,13 +96,17 @@ def train():
         # hyp['lr0'] *= 0.1  # reduce lr (i.e. SGD=5E-3, Adam=5E-4)
         optimizer = optim.Adam(pg0, lr=hyp['lr0'])
         # optimizer = AdaBound(pg0, lr=hyp['lr0'], final_lr=0.1)
+        # print('Adam_lr: {}'.format(hyp['lr0']))
     else:
         optimizer = optim.SGD(
             pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
+        print("SGD_lr: {}, momentum: {}, decay: {}".format(
+            hyp['lr0'], hyp['momentum'], hyp['weight_decay']))
     # add pg1 with weight_decay
     optimizer.add_param_group(
         {'params': pg1, 'weight_decay': hyp['weight_decay']})
     optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
+
     del pg0, pg1, pg2
 
     start_epoch = 0
@@ -123,6 +130,8 @@ def train():
         # load optimizer
         if chkpt['optimizer'] is not None:
             optimizer.load_state_dict(chkpt['optimizer'])
+            # for param_group in optimizer.param_groups:
+            #     param_group['lr'] = hyp['lr0']
             best_fitness = chkpt['best_fitness']
 
         # load results
@@ -137,11 +146,6 @@ def train():
         # possible weights are '*.weights', 'yolov3-tiny.conv.15',  'darknet53.conv.74' etc.
         load_darknet_weights(model, weights)
 
-    # Mixed precision training https://github.com/NVIDIA/apex
-    if mixed_precision:
-        model, optimizer = amp.initialize(
-            model, optimizer, opt_level='O1', verbosity=0)
-
     # Scheduler https://github.com/ultralytics/yolov3/issues/238
     # lf = lambda x: 1 - x / epochs  # linear ramp to zero
     # lf = lambda x: 10 ** (hyp['lrf'] * x / epochs)  # exp ramp
@@ -149,20 +153,15 @@ def train():
     # lf = lambda x: 0.5 * (1 + math.cos(x * math.pi / epochs))  # cosine https://arxiv.org/pdf/1812.01187.pdf
     # scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=range(59, 70, 1), gamma=0.8)  # gradual fall to 0.1*lr0
+
+    # Mixed precision training https://github.com/NVIDIA/apex
+    if mixed_precision:
+        model, optimizer = amp.initialize(
+            model, optimizer, opt_level='O1', verbosity=0)
+
     scheduler = lr_scheduler.MultiStepLR(
         optimizer, milestones=[round(epochs * x) for x in [0.8, 0.9]], gamma=0.1)
     scheduler.last_epoch = start_epoch
-
-    # # Plot lr schedule
-    # y = []
-    # for _ in range(epochs):
-    #     scheduler.step()
-    #     y.append(optimizer.param_groups[0]['lr'])
-    # plt.plot(y, '.-', label='LambdaLR')
-    # plt.xlabel('epoch')
-    # plt.ylabel('LR')
-    # plt.tight_layout()
-    # plt.savefig('LR.png', dpi=300)
 
     # Initialize distributed training
     if device.type != 'cpu' and torch.cuda.device_count() > 1:
@@ -226,7 +225,8 @@ def train():
     # epoch ------------------------------------------------------------------
     for epoch in range(start_epoch, epochs):
         model.train()
-
+        for param_group in optimizer.param_groups:
+            print('LR: ', param_group['lr'])
         # Prebias
         if prebias:
             if epoch < 3:  # prebias
