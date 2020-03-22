@@ -16,8 +16,6 @@ except:
     mixed_precision = False  # not installed
 
 wdir = 'weights' + os.sep  # weights dir
-last = wdir + 'last.pt'
-best = wdir + 'best.pt'
 results_file = 'results.txt'
 
 # Hyperparameters (results68: 59.9 mAP@0.5 yolov3-spp-416) https://github.com/ultralytics/yolov3/issues/310
@@ -28,7 +26,7 @@ hyp = {'giou': 3.54,  # giou loss gain
        'obj': 64.3,  # obj loss gain (*=img_size/320 if img_size != 320)
        'obj_pw': 1.0,  # obj BCELoss positive_weight
        'iou_t': 0.225,  # iou training threshold
-       'lr0': 0.00579,  # initial learning rate (SGD=5E-3, Adam=5E-4)
+       'lr0': 0.001,  # initial learning rate (SGD=5E-3, Adam=5E-4)
        'lrf': -4.,  # final LambdaLR learning rate = lr0 * (10 ** lrf)
        'momentum': 0.937,  # SGD momentum
        'weight_decay': 0.000484,  # optimizer weight decay
@@ -385,12 +383,10 @@ def train():
                              model) is nn.parallel.DistributedDataParallel else model.state_dict(),
                          'optimizer': None if final_epoch else optimizer.state_dict()}
 
-            # Save last checkpoint
-            torch.save(chkpt, last)
-
             # Save best checkpoint
             if best_fitness == fi:
-                torch.save(chkpt, best)
+                torch.save(chkpt, os.path.join(
+                    opt.save_path, 'YOLOv3_epoch_{}.pt'.format(epoch)))
 
             # Save backup every 10 epochs (optional)
             # if epoch > 0 and epoch % 10 == 0:
@@ -469,6 +465,8 @@ if __name__ == '__main__':
     parser.add_argument('--single-cls', action='store_true',
                         help='train as single-class dataset')
     parser.add_argument('--var', type=float, help='debug variable')
+    parser.add_argument('--save_path', type=str,
+                        help='initial weights path')
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
     print(opt)
